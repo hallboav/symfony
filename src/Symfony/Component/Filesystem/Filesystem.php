@@ -308,6 +308,92 @@ class Filesystem
     }
 
     /**
+     * Tells whether a file exists and is writable using POSIX functions.
+     *
+     * @param string $filename The filename or directory
+     * @param string $username The target username
+     *
+     * @return bool
+     *
+     * @throws IOException           When POSIX extension is not loaded
+     * @throws FileNotFoundException When filename doesn't exist
+     */
+    public function isWritableByUser(string $filename, string $username): bool
+    {
+        if (!extension_loaded('posix')) {
+            throw new IOException('Failed to check if file "%s" is writable because POSIX extension is not loaded.');
+        }
+
+        if (!@file_exists($filename)) {
+            throw new FileNotFoundException(sprintf('Failed to check if file "%s" is writable because file does not exist.', $filename), 0, null, $filename);
+        }
+
+        return $this->posixIsWritableByUser($filename, $username);
+    }
+
+    /**
+     * Tells whether a file is writable using POSIX functions.
+     *
+     * @param string $filename The filename or directory
+     * @param string $username The target username
+     *
+     * @return bool
+     *
+     * @throws IOException When unable to retrieve the file owner
+     */
+    private function posixIsWritableByUser(string $filename, string $username): bool
+    {
+        $userInfo = posix_getpwnam($username);
+
+        // Is root?
+        if (0 === $userInfo['uid']) {
+            return true;
+        }
+
+        // Is not root, so we need to check file mode
+        $filemode = @fileperms($filename) & 0b111111111;
+
+        // It is writable at all?
+        //                  -w--w--w-
+        if (!($filemode & 0b010010010)) {
+            return false;
+        }
+
+        // Warning: fileowner resolve symlinks
+        if (false === $ownerId = @fileowner($filename)) {
+            throw new IOException(sprintf('Failed to get the owner of file "%s".', $filename), 0, null, $filename);
+        }
+
+        $isUserTheOwner = $userInfo['uid'] === $ownerId;
+
+        // It is writable by owner and user is the owner
+        //                -w-------
+        if ($filemode & 0b010000000 && $isUserTheOwner) {
+            return true;
+        }
+
+        // Warning: filegroup resolve symlinks
+        $fileGroupInfo = posix_getgrgid(@filegroup($filename));
+        $isUserGroupEqualsToFileGroup = $userInfo['gid'] === $fileGroupInfo['gid'];
+        $isUserMemberOfFileGroup = in_array($userInfo['name'], $fileGroupInfo['members']);
+        $isUserGroupEqualsToFileGroupOrUserMemberOfFileGroup = $isUserGroupEqualsToFileGroup || $isUserMemberOfFileGroup;
+
+        // It is writable by the group and user group belongs to file group
+        //                ----w----
+        if ($filemode & 0b000010000 && $isUserGroupEqualsToFileGroupOrUserMemberOfFileGroup) {
+            return true;
+        }
+
+        // It is writable by others (not owner AND not group or any member)
+        //                -------w-
+        if ($filemode & 0b000000010 && !$isUserGroupEqualsToFileGroupOrUserMemberOfFileGroup && !$isUserTheOwner) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
      * Creates a symbolic link or copy a directory.
      *
      * @param string $originDir     The origin directory path
